@@ -1,0 +1,182 @@
+name: CD Pipeline - Deploy to Kubernetes
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline - Build, Test, Scan & Push"]
+    types:
+      - completed
+    branches: [ master, main ]
+  workflow_dispatch:
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/secure-task-api
+  K8S_NAMESPACE: task-api-prod
+
+jobs:
+  deploy-to-kubernetes:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+      # ============================================
+      # Stage 1: Checkout Code
+      # ============================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ============================================
+      # Stage 2: Setup Kubernetes CLI
+      # ============================================
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      # ============================================
+      # Stage 3: Configure Kubernetes Context
+      # Note: Replace with your actual K8s cluster setup
+      # Options: Minikube, Kind, EKS, GKE, AKS, etc.
+      # ============================================
+      - name: Setup Kubernetes (Minikube for demo)
+        run: |
+          # Install Minikube for local K8s cluster
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          sudo install minikube-linux-amd64 /usr/local/bin/minikube
+          
+          # Start Minikube
+          minikube start --driver=docker
+          
+          # Verify cluster
+          kubectl cluster-info
+          kubectl get nodes
+
+      # For production, use this instead:
+      # - name: Configure kubectl for Cloud Provider
+      #   run: |
+      #     echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
+      #     export KUBECONFIG=kubeconfig
+      #     kubectl cluster-info
+
+      # ============================================
+      # Stage 4: Create Namespace
+      # ============================================
+      - name: Create Namespace
+        run: |
+          kubectl apply -f k8s/namespace.yaml || true
+
+      # ============================================
+      # Stage 5: Apply ConfigMaps
+      # ============================================
+      - name: Apply ConfigMap
+        run: |
+          kubectl apply -f k8s/configmap.yaml -n ${{ env.K8S_NAMESPACE }}
+
+      # ============================================
+      # Stage 6: Deploy Application
+      # ============================================
+      - name: Deploy to Kubernetes
+        run: |
+          # Update image tag in deployment
+          sed -i "s|image:.*|image: ${{ env.DOCKER_IMAGE }}:latest|g" k8s/deployment.yaml
+          
+          # Apply deployment
+          kubectl apply -f k8s/deployment.yaml -n ${{ env.K8S_NAMESPACE }}
+          
+          # Apply service
+          kubectl apply -f k8s/service.yaml -n ${{ env.K8S_NAMESPACE }}
+
+      # ============================================
+      # Stage 7: Wait for Deployment Rollout
+      # ============================================
+      - name: Wait for Deployment
+        run: |
+          kubectl rollout status deployment/task-api-deployment \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=5m
+
+      # ============================================
+      # Stage 8: Verify Deployment Health
+      # ============================================
+      - name: Verify Deployment
+        run: |
+          echo "=== Deployment Status ==="
+          kubectl get deployments -n ${{ env.K8S_NAMESPACE }}
+          
+          echo "=== Pods ==="
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
+          
+          echo "=== Services ==="
+          kubectl get services -n ${{ env.K8S_NAMESPACE }}
+          
+          # Check pod health
+          kubectl wait --for=condition=ready pod \
+            -l app=task-api \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=3m
+
+      # ============================================
+      # Stage 9: Application Health Check
+      # ============================================
+      - name: Test Application Health
+        run: |
+          # Port forward to access the service
+          kubectl port-forward -n ${{ env.K8S_NAMESPACE }} \
+            svc/task-api-service 8080:80 &
+          
+          # Wait for port forward
+          sleep 10
+          
+          # Test health endpoint
+          curl -f http://localhost:8080/actuator/health
+          
+          # Test API endpoint
+          curl -f http://localhost:8080/api/tasks
+          
+          echo "✅ Deployment health check passed!"
+
+      # ============================================
+      # Stage 10: DAST - Dynamic Application Security Testing
+      # Why: Tests running application for security vulnerabilities
+      # ============================================
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:8080'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+          fail_action: false
+
+      - name: Upload ZAP Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-scan-report
+          path: report_html.html
+
+      # ============================================
+      # Stage 11: Deployment Summary
+      # ============================================
+      - name: Deployment Summary
+        run: |
+          echo "========================================"
+          echo "🚀 Deployment Successful!"
+          echo "========================================"
+          echo "Namespace: ${{ env.K8S_NAMESPACE }}"
+          echo "Image: ${{ env.DOCKER_IMAGE }}:latest"
+          echo "========================================"
+          kubectl get all -n ${{ env.K8S_NAMESPACE }}
+
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: deploy-to-kubernetes
+    if: failure()
+    
+    steps:
+      - name: Rollback Deployment
+        run: |
+          kubectl rollout undo deployment/task-api-deployment \
+            -n ${{ env.K8S_NAMESPACE }}
+          
+          echo "⚠️ Deployment rolled back due to failure"

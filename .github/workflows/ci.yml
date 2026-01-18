@@ -1,0 +1,206 @@
+name: CI Pipeline - Build, Test, Scan & Push
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/secure-task-api
+  JAVA_VERSION: '17'
+
+jobs:
+  build-and-test:
+    name: Build, Test & Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+      # ============================================
+      # Stage 1: Checkout Code
+      # ============================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ============================================
+      # Stage 2: Setup Java Environment
+      # ============================================
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      # ============================================
+      # Stage 3: Code Linting (Checkstyle)
+      # Why: Enforces coding standards, prevents technical debt
+      # ============================================
+      - name: Run Checkstyle
+        run: mvn checkstyle:check
+        continue-on-error: false
+
+      # ============================================
+      # Stage 4: SAST - CodeQL Analysis
+      # Why: Detects security vulnerabilities at source code level
+      # Finds: SQL injection, XSS, path traversal, etc.
+      # ============================================
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java
+
+      - name: Build for CodeQL
+        run: mvn clean compile -DskipTests
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:java"
+
+      # ============================================
+      # Stage 5: SCA - Dependency Vulnerability Scan
+      # Why: Identifies vulnerable dependencies (Log4Shell, etc.)
+      # ============================================
+      - name: OWASP Dependency Check
+        run: |
+          mvn org.owasp:dependency-check-maven:check \
+            -DfailBuildOnCVSS=7 \
+            -DsuppressionFile=dependency-check-suppressions.xml || true
+
+      - name: Upload Dependency Check Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.html
+
+      # ============================================
+      # Stage 6: Unit & Integration Tests
+      # Why: Validates business logic, prevents regressions
+      # ============================================
+      - name: Run Tests with Coverage
+        run: mvn test jacoco:report
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: target/site/jacoco/
+
+      # ============================================
+      # Stage 7: Build Application Artifact
+      # Why: Creates deployable JAR file
+      # ============================================
+      - name: Build JAR
+        run: mvn package -DskipTests
+
+      - name: Upload JAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-api-jar
+          path: target/*.jar
+
+  docker-build-scan-push:
+    name: Docker Build, Scan & Push
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download JAR Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: task-api-jar
+          path: target/
+
+      # ============================================
+      # Stage 8: Docker Image Build
+      # Why: Creates containerized application
+      # ============================================
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        run: |
+          docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
+          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
+
+      # ============================================
+      # Stage 9: Container Security Scan (Trivy)
+      # Why: Detects vulnerabilities in container image
+      # Scans: OS packages, application dependencies
+      # ============================================
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+
+      - name: Upload Trivy Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # ============================================
+      # Stage 10: Container Runtime Test
+      # Why: Validates container starts and responds correctly
+      # ============================================
+      - name: Test Container Runtime
+        run: |
+          docker run -d --name test-container \
+            -p 8080:8080 \
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          
+          # Wait for application to start
+          echo "Waiting for application to start..."
+          sleep 30
+          
+          # Test health endpoint
+          curl -f http://localhost:8080/actuator/health || exit 1
+          
+          # Test API endpoint
+          curl -f http://localhost:8080/api/tasks || exit 1
+          
+          echo "Container runtime test passed!"
+          docker stop test-container
+          docker rm test-container
+
+      # ============================================
+      # Stage 11: Push to DockerHub
+      # Why: Makes verified image available for deployment
+      # ============================================
+      - name: Login to DockerHub
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker Image
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        run: |
+          docker push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          docker push ${{ env.DOCKER_IMAGE }}:latest
+
+      - name: Docker Scout CVEs
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ env.DOCKER_IMAGE }}:latest
+          only-severities: critical,high
+          exit-code: false
