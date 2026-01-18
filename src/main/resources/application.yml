@@ -1,0 +1,63 @@
+# Spring Boot Application Configuration
+server:
+  port: 8080
+
+spring:
+  application:
+    name: task-management-devops
+  
+  # H2 Database Configuration
+  datasource:
+    url: jdbc:h2:mem:taskdb
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+  
+  # H2 Console Configuration (for development/debugging)
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  
+  # JPA Configuration
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+  
+  # Jackson JSON Configuration
+  jackson:
+    serialization-inclusion: non_null
+    default-property-inclusion: non_null
+
+# Actuator Configuration (for health checks in CI/CD)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+# Springdoc OpenAPI Configuration (for Swagger UI)
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    com.example.task_management_devops: DEBUG
