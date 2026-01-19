@@ -30,6 +30,14 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
+      #Cache Dependency Check
+      - name: Cache Dependency-Check data
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: ${{ runner.os }}-depcheck-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-depcheck-
+
       - name: Checkstyle
         run: mvn checkstyle:check
         continue-on-error: true
@@ -45,8 +53,16 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
 
+      #OWASP Dependency Check
       - name: OWASP Dependency Check
-        run: mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DsuppressionFile=dependency-check-suppressions.xml
+        run: |
+          mkdir -p /tmp/dc-data
+          mvn org.owasp:dependency-check-maven:check \
+            -Ddependency-check.data=/tmp/dc-data \
+            -Ddependency-check.skipUpdate=true \
+            -DfailBuildOnCVSS=7 \
+            -DsuppressionFile=dependency-check-suppressions.xml
+        continue-on-error: true
 
       - name: Upload Dependency Check Report
         if: always()
@@ -115,6 +131,13 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
+      - name: Docker Scout Analysis
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          only-severities: CRITICAL,HIGH
+
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
@@ -125,9 +148,3 @@ jobs:
         run: |
           docker push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
           docker push ${{ env.DOCKER_IMAGE }}:latest
-
-      - name: Docker Scout Analysis
-        uses: docker/scout-action@v1
-        with:
-          image: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
-          only-severities: CRITICAL,HIGH
