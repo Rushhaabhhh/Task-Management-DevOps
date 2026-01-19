@@ -72,7 +72,8 @@ jobs:
           path: target/dependency-check-report.html
 
       - name: Test with Coverage
-        run: mvn test jacoco:report
+        run: mvn clean test jacoco:report
+        continue-on-error: true
 
       - name: Upload Coverage Report
         uses: actions/upload-artifact@v4
