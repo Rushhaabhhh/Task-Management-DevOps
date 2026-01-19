@@ -3,27 +3,31 @@ kind: ConfigMap
 metadata:
   name: task-api-config
   namespace: task-api-prod
+  labels:
+    app: task-api
 data:
-  application.yml: |
-    server:
-      port: 8080
-    spring:
-      application:
-        name: task-management-api
-      datasource:
-        url: jdbc:h2:mem:taskdb
-        driver-class-name: org.h2.Driver
-        username: sa
-        password: 
-      jpa:
-        database-platform: org.hibernate.dialect.H2Dialect
-        hibernate:
-          ddl-auto: create-drop
-    management:
-      endpoints:
-        web:
-          exposure:
-            include: health,info,metrics
-      endpoint:
-        health:
-          show-details: always
+  # Application Configuration
+  SPRING_APPLICATION_NAME: "task-management-api"
+  SERVER_PORT: "8080"
+  
+  # Database Configuration (H2 in-memory)
+  SPRING_DATASOURCE_URL: "jdbc:h2:mem:taskdb"
+  SPRING_DATASOURCE_DRIVER_CLASS_NAME: "org.h2.Driver"
+  SPRING_DATASOURCE_USERNAME: "sa"
+  SPRING_DATASOURCE_PASSWORD: ""
+  
+  # JPA Configuration
+  SPRING_JPA_DATABASE_PLATFORM: "org.hibernate.dialect.H2Dialect"
+  SPRING_JPA_HIBERNATE_DDL_AUTO: "create-drop"
+  SPRING_JPA_SHOW_SQL: "false"
+  
+  # H2 Console (disable in production)
+  SPRING_H2_CONSOLE_ENABLED: "false"
+  
+  # Logging Configuration
+  LOGGING_LEVEL_ROOT: "INFO"
+  LOGGING_LEVEL_COM_DEVOPS: "DEBUG"
+  
+  # Actuator Configuration
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"

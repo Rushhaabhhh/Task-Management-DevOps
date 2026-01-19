@@ -5,3 +5,4 @@ metadata:
   labels:
     name: task-api-prod
     environment: production
+    app: task-api

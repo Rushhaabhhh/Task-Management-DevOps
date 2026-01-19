@@ -30,12 +30,13 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Cache Dependency-Check data
-        uses: actions/cache@v4
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
         with:
-          path: ~/.m2/repository/org/owasp/dependency-check-data
-          key: ${{ runner.os }}-depcheck-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-depcheck-
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
 
       - name: Checkstyle
         run: mvn checkstyle:check
@@ -53,13 +54,7 @@ jobs:
         uses: github/codeql-action/analyze@v3
 
       - name: OWASP Dependency Check
-        run: |
-          mkdir -p /tmp/dc-data
-          mvn org.owasp:dependency-check-maven:check \
-            -Ddependency-check.data=/tmp/dc-data \
-            -Ddependency-check.skipUpdate=true \
-            -DfailBuildOnCVSS=7 \
-            -DsuppressionFile=dependency-check-suppressions.xml
+        run: mvn dependency-check:check
         continue-on-error: true
 
       - name: Upload Dependency Check Report
@@ -110,35 +105,42 @@ jobs:
           name: task-api-jar-${{ github.run_number }}
           path: target/
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build & Tag Docker Image
-        run: |
-          docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
-          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
+      - name: Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          load: true
 
-      - name: Trivy Vulnerability Scan
+      - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
           format: 'sarif'
           output: 'trivy-results.sarif'
-          severity: 'CRITICAL'
-          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
-        continue-on-error: true
 
-      - name: Docker Scout Analysis
-        uses: docker/scout-action@v1
+      - name: Run Trivy (Table Format)
+        uses: aquasecurity/trivy-action@master
         with:
-          command: cves
-          image: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
-          only-severities: CRITICAL,HIGH
+          image-ref: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH,MEDIUM'
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
